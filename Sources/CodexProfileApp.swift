@@ -144,15 +144,17 @@ class ProfileManager: ObservableObject {
     }
     
     private func forceRestartCodex() {
-        let script = """
-        osascript -e 'tell application "Codex" to quit'
-        sleep 1
-        open -a Codex
-        """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", script]
-        try? process.run()
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "Codex" }
+        for app in apps {
+            app.terminate()
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = ["-a", "Codex"]
+            try? process.run()
+        }
     }
     
     func rotateToNext() {
