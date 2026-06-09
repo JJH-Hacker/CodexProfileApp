@@ -189,7 +189,7 @@ class ProfileManager: ObservableObject {
         tell application "System Events"
             tell process "Codex"
                 set frontmost to true
-                keystroke "keep going"
+                keystroke "계정 스위칭이 완료되었습니다. 끊긴 이전 작업을 그대로 이어서 진행해 줘."
                 keystroke return
             end tell
         end tell
@@ -199,9 +199,9 @@ class ProfileManager: ObservableObject {
         process.arguments = ["-e", script]
         do {
             try process.run()
-            self.log("Sent 'keep going' to Codex via AppleScript.")
+            self.log("Sent auto-resume prompt to Codex via AppleScript.")
         } catch {
-            self.log("Failed to send 'keep going': \(error.localizedDescription)")
+            self.log("Failed to send auto-resume prompt: \(error.localizedDescription)")
         }
     }
     
