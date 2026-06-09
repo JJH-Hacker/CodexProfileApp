@@ -60,6 +60,13 @@ class ProfileManager: ObservableObject {
     @Published var outputLog: String = "Ready.\n"
     @Published var isBusy = false
     
+    @Published var restartCodexOnSwitch: Bool {
+        didSet {
+            UserDefaults.standard.set(restartCodexOnSwitch, forKey: "restartCodexOnSwitch")
+            log("Restart Codex on switch set to \(restartCodexOnSwitch)")
+        }
+    }
+    
     let defaultCodexHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     let profilesRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex-profiles", isDirectory: true)
     
@@ -82,6 +89,7 @@ class ProfileManager: ObservableObject {
     private let codexPath = findCodex()
 
     init() {
+        self.restartCodexOnSwitch = UserDefaults.standard.object(forKey: "restartCodexOnSwitch") as? Bool ?? true
         refreshProfiles()
     }
     
@@ -133,7 +141,11 @@ class ProfileManager: ObservableObject {
                 try data.write(to: mainAuthURL, options: .atomic)
                 log("Set \(profile.id) as Active Global Account.")
                 activeProfile = profile
-                forceRestartCodex()
+                if restartCodexOnSwitch {
+                    forceRestartCodex()
+                } else {
+                    log("Hot-swapped auth.json without restarting Codex.")
+                }
                 fetchAllUsages()
             } else {
                 log("Profile \(profile.id) does not have auth.json. Cannot set active.")
@@ -511,6 +523,11 @@ struct ContentView: View {
                                 .buttonStyle(.plain)
                                 
                                 Toggle("Auto-Rotate on Limit", isOn: $profileManager.autoRotateEnabled)
+                                    .toggleStyle(SwitchToggleStyle(tint: .blue))
+                                    .foregroundStyle(.white)
+                                    .font(.footnote)
+                                
+                                Toggle("Restart Codex on Switch", isOn: $profileManager.restartCodexOnSwitch)
                                     .toggleStyle(SwitchToggleStyle(tint: .blue))
                                     .foregroundStyle(.white)
                                     .font(.footnote)
