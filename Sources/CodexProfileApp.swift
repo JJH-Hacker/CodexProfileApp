@@ -54,6 +54,8 @@ class ProfileManager: ObservableObject {
     @Published var profiles: [Profile] = []
     @Published var activeProfile: Profile?
     @Published var activeUsagePercent: Int?
+    @Published var profileUsages: [String: Int] = [:]
+    @Published var hasNotifiedFull = false
     @Published var isFetchingUsage = false
     @Published var outputLog: String = "Ready.\n"
     @Published var isBusy = false
@@ -114,7 +116,7 @@ class ProfileManager: ObservableObject {
         }
         
         if activeProfile != nil {
-            fetchUsagePercent()
+            fetchAllUsages()
         }
     }
     
@@ -132,7 +134,7 @@ class ProfileManager: ObservableObject {
                 log("Set \(profile.id) as Active Global Account.")
                 activeProfile = profile
                 forceRestartCodex()
-                fetchUsagePercent()
+                fetchAllUsages()
             } else {
                 log("Profile \(profile.id) does not have auth.json. Cannot set active.")
             }
@@ -155,7 +157,19 @@ class ProfileManager: ObservableObject {
     
     func rotateToNext() {
         guard !profiles.isEmpty else { return }
-        if let current = activeProfile, let idx = profiles.firstIndex(of: current) {
+        // For manual rotation, still go to next sequentially if usage is not known,
+        // but if we have profileUsages, we can pick the best one.
+        // Actually, let's just use the best available profile.
+        let bestProfile = profiles.min { (p1, p2) -> Bool in
+            let u1 = profileUsages[p1.id] ?? 0
+            let u2 = profileUsages[p2.id] ?? 0
+            return u1 < u2
+        }
+        
+        if let best = bestProfile, best.id != activeProfile?.id {
+            setActive(best)
+        } else if let current = activeProfile, let idx = profiles.firstIndex(of: current) {
+            // Fallback to sequential if all are equal or best is current
             let nextIdx = (idx + 1) % profiles.count
             setActive(profiles[nextIdx])
         } else {
@@ -167,18 +181,17 @@ class ProfileManager: ObservableObject {
         logMonitorTimer?.invalidate()
         // Poll every 30 seconds
         logMonitorTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
-            self?.fetchUsagePercent()
+            self?.fetchAllUsages()
         }
     }
 
-    func fetchUsagePercent() {
-        guard let current = activeProfile else { return }
+    func fetchAllUsages() {
+        guard !profiles.isEmpty else { return }
         
         DispatchQueue.main.async {
             self.isFetchingUsage = true
         }
         
-        let process = Process()
         var codexbarPath = Bundle.main.url(forResource: "codexbar", withExtension: nil)?.path
         if codexbarPath == nil {
             let fallbackPath = FileManager.default.currentDirectoryPath + "/Resources/codexbar"
@@ -201,54 +214,86 @@ class ProfileManager: ObservableObject {
             return
         }
         
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["usage", "--format", "json", "--provider", "codex"]
+        let group = DispatchGroup()
+        var newUsages: [String: Int] = [:]
+        let lock = NSLock()
         
-        var env = ProcessInfo.processInfo.environment
-        env["CODEX_HOME"] = current.url.path
-        process.environment = env
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        do {
-            try process.run()
-            process.terminationHandler = { [weak self] _ in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                DispatchQueue.main.async {
-                    self?.isFetchingUsage = false
-                    self?.parseUsageData(data)
+        for profile in profiles {
+            group.enter()
+            
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = ["usage", "--format", "json", "--provider", "codex"]
+            
+            var env = ProcessInfo.processInfo.environment
+            env["CODEX_HOME"] = profile.url.path
+            process.environment = env
+            
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            
+            do {
+                try process.run()
+                process.terminationHandler = { _ in
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                       let codexItem = array.first(where: { ($0["provider"] as? String) == "codex" }),
+                       let usage = codexItem["usage"] as? [String: Any],
+                       let primary = usage["primary"] as? [String: Any],
+                       let percent = primary["usedPercent"] as? Int {
+                        lock.lock()
+                        newUsages[profile.id] = percent
+                        lock.unlock()
+                    }
+                    group.leave()
                 }
+            } catch {
+                group.leave()
             }
-        } catch {
-            DispatchQueue.main.async {
-                self.log("Failed to launch codexbar: \(error.localizedDescription)")
-                self.isFetchingUsage = false
+        }
+        
+        group.notify(queue: .main) { [weak self] in
+            guard let self = self else { return }
+            self.isFetchingUsage = false
+            self.profileUsages = newUsages
+            
+            if let active = self.activeProfile, let currentUsage = newUsages[active.id] {
+                self.activeUsagePercent = currentUsage
+                self.log("Current Usage: \(currentUsage)%")
+                
+                if self.autoRotateEnabled && currentUsage >= 100 {
+                    self.log("Usage limit reached (100%). Finding best account...")
+                    
+                    let bestProfile = self.profiles.min { p1, p2 in
+                        let u1 = newUsages[p1.id] ?? 100
+                        let u2 = newUsages[p2.id] ?? 100
+                        return u1 < u2
+                    }
+                    
+                    if let best = bestProfile, let bestUsage = newUsages[best.id], bestUsage < 100 {
+                        self.hasNotifiedFull = false
+                        self.log("Auto-rotating to \(best.id) (Usage: \(bestUsage)%)")
+                        self.setActive(best)
+                    } else {
+                        self.log("All accounts are at 100% usage. Waiting...")
+                        if !self.hasNotifiedFull {
+                            self.hasNotifiedFull = true
+                            self.notifyAllAccountsFull()
+                        }
+                    }
+                }
             }
         }
     }
     
-    private func parseUsageData(_ data: Data) {
-        guard let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            log("Failed to parse codexbar json")
-            return
-        }
-        
-        if let codexItem = array.first(where: { ($0["provider"] as? String) == "codex" }),
-           let usage = codexItem["usage"] as? [String: Any],
-           let primary = usage["primary"] as? [String: Any],
-           let percent = primary["usedPercent"] as? Int {
-            
-            self.activeUsagePercent = percent
-            log("Current Usage: \(percent)%")
-            
-            if self.autoRotateEnabled && percent >= 100 {
-                log("Usage limit reached (100%). Auto-rotating to next account...")
-                self.rotateToNext()
-            }
-        } else {
-            log("Usage percent not found in json.")
-        }
+    private func notifyAllAccountsFull() {
+        let script = """
+        display notification "모든 계정의 사용량이 100%에 도달했습니다. 잠시 후 다시 시도해주세요." with title "Codex Profile Manager" subtitle "사용량 한도 초과" sound name "Basso"
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
     }
     
     func quickAddKey(_ key: String) {
@@ -358,7 +403,7 @@ struct ContentView: View {
                     }
 
                     Spacer()
-                    Button(action: { profileManager.fetchUsagePercent() }) {
+                    Button(action: { profileManager.fetchAllUsages() }) {
                         Label("Refresh", systemImage: "arrow.clockwise")
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -392,7 +437,7 @@ struct ContentView: View {
                                 ScrollView {
                                     VStack(spacing: 10) {
                                         ForEach(profileManager.profiles) { profile in
-                                            ProfileRow(profile: profile, isActive: profileManager.activeProfile?.id == profile.id)
+                                            ProfileRow(profile: profile, isActive: profileManager.activeProfile?.id == profile.id, usagePercent: profileManager.profileUsages[profile.id])
                                                 .onTapGesture {
                                                     profileManager.setActive(profile)
                                                 }
@@ -496,6 +541,7 @@ struct ContentView: View {
 struct ProfileRow: View {
     let profile: Profile
     let isActive: Bool
+    let usagePercent: Int?
     
     var body: some View {
         HStack {
@@ -505,6 +551,21 @@ struct ProfileRow: View {
                 .foregroundStyle(isActive ? .white : .white.opacity(0.7))
                 .fontWeight(isActive ? .bold : .regular)
             Spacer()
+            
+            if let percent = usagePercent {
+                let remaining = max(0, 100 - percent)
+                Text("\(remaining)%")
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        remaining < 10 ? Color.red.opacity(0.8) :
+                        remaining < 30 ? Color.orange.opacity(0.8) :
+                        Color.green.opacity(0.8)
+                    )
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
         }
         .padding(12)
         .background(isActive ? Color.white.opacity(0.2) : Color.white.opacity(0.05))
