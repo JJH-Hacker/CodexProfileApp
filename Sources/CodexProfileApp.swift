@@ -143,7 +143,9 @@ class ProfileManager: ObservableObject {
     
     private func forceRestartCodex() {
         let script = """
-        killall codex 2>/dev/null
+        osascript -e 'tell application "Codex" to quit'
+        sleep 1
+        open -a Codex
         """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
