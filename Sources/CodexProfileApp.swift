@@ -186,10 +186,13 @@ class ProfileManager: ObservableObject {
     
     private func sendKeepGoingToCodex() {
         let script = """
+        set the clipboard to "계정 스위칭이 완료되었습니다. 끊긴 이전 작업을 그대로 이어서 진행해 줘."
         tell application "System Events"
             tell process "Codex"
                 set frontmost to true
-                keystroke "계정 스위칭이 완료되었습니다. 끊긴 이전 작업을 그대로 이어서 진행해 줘."
+                delay 0.5
+                keystroke "v" using command down
+                delay 0.5
                 keystroke return
             end tell
         end tell
