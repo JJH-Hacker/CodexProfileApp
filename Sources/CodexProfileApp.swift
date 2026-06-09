@@ -192,7 +192,17 @@ class ProfileManager: ObservableObject {
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
             
+            // Force Codex to become the active foreground app
+            if let codexApp = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == "Codex" }) {
+                codexApp.activate(options: .activateIgnoringOtherApps)
+            } else {
+                self.log("Codex app is not running. Cannot send auto-resume.")
+                return
+            }
+            
             DispatchQueue.global(qos: .userInitiated).async {
+                usleep(500_000) // Wait 0.5s for Codex window to focus
+                
                 guard let source = CGEventSource(stateID: .hidSystemState) else {
                     self.log("Failed to create CGEventSource")
                     return
