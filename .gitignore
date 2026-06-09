@@ -1,0 +1,6 @@
+.DS_Store
+CodexProfileManager.app
+CodexProfileManager
+build/
+.swiftpm/
+*.swp
