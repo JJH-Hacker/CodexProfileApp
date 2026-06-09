@@ -185,29 +185,50 @@ class ProfileManager: ObservableObject {
     }
     
     private func sendKeepGoingToCodex() {
-        let scriptStr = """
-        set the clipboard to "계정 스위칭이 완료되었습니다. 끊긴 이전 작업을 그대로 이어서 진행해 줘."
-        tell application "System Events"
-            tell process "Codex"
-                set frontmost to true
-                delay 0.5
-                keystroke "v" using command down
-                delay 0.5
-                keystroke return
-            end tell
-        end tell
-        """
+        let text = "계정 스위칭이 완료되었습니다. 끊긴 이전 작업을 그대로 이어서 진행해 줘."
         
-        DispatchQueue.global(qos: .userInitiated).async {
-            var error: NSDictionary?
-            if let script = NSAppleScript(source: scriptStr) {
-                script.executeAndReturnError(&error)
+        DispatchQueue.main.async {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let source = CGEventSource(stateID: .hidSystemState) else {
+                    self.log("Failed to create CGEventSource")
+                    return
+                }
+                
+                // Cmd Down
+                let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: true)
+                cmdDown?.flags = .maskCommand
+                cmdDown?.post(tap: .cghidEventTap)
+                
+                // V Down
+                let vDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)
+                vDown?.flags = .maskCommand
+                vDown?.post(tap: .cghidEventTap)
+                
+                // V Up
+                let vUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
+                vUp?.flags = .maskCommand
+                vUp?.post(tap: .cghidEventTap)
+                
+                // Cmd Up
+                let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: 0x37, keyDown: false)
+                cmdUp?.post(tap: .cghidEventTap)
+                
+                usleep(500_000) // wait 0.5s
+                
+                // Enter Down
+                let enterDown = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: true)
+                enterDown?.post(tap: .cghidEventTap)
+                
+                // Enter Up
+                let enterUp = CGEvent(keyboardEventSource: source, virtualKey: 0x24, keyDown: false)
+                enterUp?.post(tap: .cghidEventTap)
+                
                 DispatchQueue.main.async {
-                    if let err = error {
-                        self.log("Failed to send auto-resume prompt: \(err)")
-                    } else {
-                        self.log("Sent auto-resume prompt to Codex via NSAppleScript.")
-                    }
+                    self.log("Sent auto-resume prompt via native CGEvent.")
                 }
             }
         }
