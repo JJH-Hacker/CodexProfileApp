@@ -67,6 +67,13 @@ class ProfileManager: ObservableObject {
         }
     }
     
+    @Published var autoResumeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(autoResumeEnabled, forKey: "autoResumeEnabled")
+            log("Auto-Resume on restart set to \(autoResumeEnabled)")
+        }
+    }
+    
     let defaultCodexHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
     let profilesRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex-profiles", isDirectory: true)
     
@@ -90,6 +97,7 @@ class ProfileManager: ObservableObject {
 
     init() {
         self.restartCodexOnSwitch = UserDefaults.standard.object(forKey: "restartCodexOnSwitch") as? Bool ?? true
+        self.autoResumeEnabled = UserDefaults.standard.object(forKey: "autoResumeEnabled") as? Bool ?? true
         refreshProfiles()
     }
     
@@ -166,6 +174,34 @@ class ProfileManager: ObservableObject {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             process.arguments = ["-a", "Codex"]
             try? process.run()
+            
+            if self.autoResumeEnabled {
+                self.log("Auto-Resume enabled. Waiting 4 seconds to send 'keep going'...")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    self.sendKeepGoingToCodex()
+                }
+            }
+        }
+    }
+    
+    private func sendKeepGoingToCodex() {
+        let script = """
+        tell application "System Events"
+            tell process "Codex"
+                set frontmost to true
+                keystroke "keep going"
+                keystroke return
+            end tell
+        end tell
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        do {
+            try process.run()
+            self.log("Sent 'keep going' to Codex via AppleScript.")
+        } catch {
+            self.log("Failed to send 'keep going': \(error.localizedDescription)")
         }
     }
     
@@ -330,6 +366,37 @@ class ProfileManager: ObservableObject {
             }
         } catch {
             log("Failed to create profile: \(error.localizedDescription)")
+        }
+    }
+    
+    func oauthAddProfile() {
+        let name = "Profile-\(profiles.count + 1)"
+        let url = profilesRoot.appendingPathComponent(name, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            log("Created profile \(name). Opening browser for OAuth login...")
+            
+            isBusy = true
+            CodexRunner.run(codexPath: codexPath, profileHome: url, arguments: ["login"], stdin: nil, currentDirectory: nil) { result in
+                DispatchQueue.main.async {
+                    self.isBusy = false
+                    self.log(result)
+                    
+                    let authFile = url.appendingPathComponent("auth.json")
+                    if FileManager.default.fileExists(atPath: authFile.path) {
+                        self.log("OAuth login successful for \(name).")
+                        self.refreshProfiles()
+                        if let newProfile = self.profiles.first(where: { $0.id == name }) {
+                            self.setActive(newProfile)
+                        }
+                    } else {
+                        self.log("OAuth login failed or cancelled. Cleaning up \(name)...")
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                }
+            }
+        } catch {
+            log("Failed to start OAuth login: \(error.localizedDescription)")
         }
     }
     
@@ -531,6 +598,11 @@ struct ContentView: View {
                                     .toggleStyle(SwitchToggleStyle(tint: .blue))
                                     .foregroundStyle(.white)
                                     .font(.footnote)
+                                    
+                                Toggle("Auto-Resume ('keep going')", isOn: $profileManager.autoResumeEnabled)
+                                    .toggleStyle(SwitchToggleStyle(tint: .blue))
+                                    .foregroundStyle(.white)
+                                    .font(.footnote)
                             }
                             .padding()
                         }
@@ -574,6 +646,19 @@ struct ContentView: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                                     .buttonStyle(.plain)
                                 }
+                                
+                                Button(action: { profileManager.oauthAddProfile() }) {
+                                    HStack {
+                                        Image(systemName: "safari")
+                                        Text("Login with Web (OAuth)")
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(Color.white.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(profileManager.isBusy)
                             }
                             .padding()
                         }
