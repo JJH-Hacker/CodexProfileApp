@@ -336,6 +336,43 @@ class ProfileManager: ObservableObject {
     func log(_ message: String) {
         outputLog += "[\(Date().formatted(date: .omitted, time: .standard))] \(message)\n"
     }
+    
+    func clearLogs() {
+        outputLog = "Logs cleared.\n"
+    }
+    
+    func deleteProfile(_ profile: Profile) {
+        do {
+            try FileManager.default.removeItem(at: profile.url)
+            log("Deleted profile: \(profile.id)")
+            if activeProfile?.id == profile.id {
+                activeProfile = nil
+                try? FileManager.default.removeItem(at: defaultCodexHome.appendingPathComponent("auth.json"))
+            }
+            refreshProfiles()
+        } catch {
+            log("Failed to delete profile: \(error.localizedDescription)")
+        }
+    }
+
+    func renameProfile(_ profile: Profile, newName: String) {
+        let safeName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !safeName.isEmpty, safeName != profile.id else { return }
+        let newURL = profilesRoot.appendingPathComponent(safeName, isDirectory: true)
+        do {
+            try FileManager.default.moveItem(at: profile.url, to: newURL)
+            log("Renamed profile \(profile.id) to \(safeName)")
+            if activeProfile?.id == profile.id {
+                activeProfile = nil
+            }
+            refreshProfiles()
+            if let renamed = profiles.first(where: { $0.id == safeName }) {
+                setActive(renamed)
+            }
+        } catch {
+            log("Failed to rename profile: \(error.localizedDescription)")
+        }
+    }
 
     private func isSymlink(_ url: URL) -> Bool {
         (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
@@ -364,6 +401,9 @@ struct Profile: Identifiable, Hashable {
 struct ContentView: View {
     @ObservedObject var profileManager = ProfileManager.shared
     @State private var newApiKey: String = ""
+    @State private var profileToRename: Profile?
+    @State private var newProfileName: String = ""
+    @State private var profileToDelete: Profile?
 
     var body: some View {
         ZStack {
@@ -443,6 +483,15 @@ struct ContentView: View {
                                                 .onTapGesture {
                                                     profileManager.setActive(profile)
                                                 }
+                                                .contextMenu {
+                                                    Button("Rename...") {
+                                                        newProfileName = profile.id
+                                                        profileToRename = profile
+                                                    }
+                                                    Button("Delete") {
+                                                        profileToDelete = profile
+                                                    }
+                                                }
                                         }
                                     }
                                 }
@@ -514,9 +563,17 @@ struct ContentView: View {
 
                         GlassBox {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("System Log")
-                                    .font(.headline)
-                                    .foregroundStyle(.white)
+                                HStack {
+                                    Text("System Log")
+                                        .font(.headline)
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Button(action: { profileManager.clearLogs() }) {
+                                        Image(systemName: "trash")
+                                            .foregroundStyle(.white.opacity(0.6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                                 ScrollView {
                                     Text(profileManager.outputLog)
                                         .font(.system(.footnote, design: .monospaced))
@@ -535,6 +592,29 @@ struct ContentView: View {
                 }
                 .padding(20)
             }
+        }
+        .alert("Rename Profile", isPresented: Binding<Bool>(
+            get: { profileToRename != nil },
+            set: { if !$0 { profileToRename = nil } }
+        ), presenting: profileToRename) { profile in
+            TextField("New Name", text: $newProfileName)
+            Button("Cancel", role: .cancel) { profileToRename = nil }
+            Button("Save") {
+                profileManager.renameProfile(profile, newName: newProfileName)
+                profileToRename = nil
+            }
+        }
+        .alert("Delete Profile", isPresented: Binding<Bool>(
+            get: { profileToDelete != nil },
+            set: { if !$0 { profileToDelete = nil } }
+        ), presenting: profileToDelete) { profile in
+            Button("Cancel", role: .cancel) { profileToDelete = nil }
+            Button("Delete", role: .destructive) {
+                profileManager.deleteProfile(profile)
+                profileToDelete = nil
+            }
+        } message: { profile in
+            Text("Are you sure you want to delete '\(profile.id)'? This action cannot be undone.")
         }
     }
 }
