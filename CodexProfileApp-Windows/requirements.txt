@@ -1,0 +1,6 @@
+PyQt6
+pyautogui
+pyperclip
+pywin32
+requests
+win10toast
